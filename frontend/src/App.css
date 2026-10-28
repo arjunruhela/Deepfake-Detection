@@ -575,3 +575,32 @@ footer {
   margin: 8px 0;
   overflow-wrap: anywhere;
 }
+
+ 
+/* Grad-CAM Button */
+.gradcam-button {
+  margin-top: 12px;
+  background: #292344;
+  border: 1px solid #8b7cff;
+}
+
+.gradcam-button:hover:not(:disabled) {
+  background: #3b3266;
+}
+
+/* Grad-CAM Result Panel */
+.gradcam-panel {
+  text-align: center;
+}
+
+/* Grad-CAM Heatmap Image */
+.gradcam-image {
+  display: block;
+  width: 100%;
+  max-width: 500px;
+  max-height: 500px;
+  object-fit: contain;
+  margin: 18px auto;
+  border-radius: 12px;
+  border: 1px solid #34384b;
+}

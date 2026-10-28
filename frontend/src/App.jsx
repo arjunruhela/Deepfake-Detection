@@ -1,6 +1,7 @@
 import { useState } from "react";
 import axios from "axios";
 import "./App.css";
+
 const API_URL = "http://127.0.0.1:5000";
 function App() {
    const [mode, setMode] = useState("image");
@@ -15,6 +16,8 @@ function App() {
    const [historyLoading, setHistoryLoading] = useState(false);
    const [historyError, setHistoryError] = useState("");
    const [showHistory, setShowHistory] = useState(false);
+   const [gradcamResult, setGradcamResult] = useState(null);
+   const [gradcamLoading, setGradcamLoading] = useState(false);
    function handleModeChange(newMode) {
      setMode(newMode);
      setResult(null);
@@ -70,6 +73,38 @@ function App() {
        setLoading(false);
      }
    }
+   
+  async function handleGradcam() {
+  if (!image) {
+    setError("Please select an image first.");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("image", image);
+
+  try {
+    setGradcamLoading(true);
+    setError("");
+    setGradcamResult(null);
+
+    const response = await axios.post(
+      `${API_URL}/gradcam`,
+      formData,
+      { timeout: 120000 }
+    );
+
+    setGradcamResult(response.data);
+  } catch (err) {
+    setError(
+      err.response?.data?.error ||
+      "Unable to generate the heatmap. Make sure Flask is running."
+    );
+  } finally {
+    setGradcamLoading(false);
+  }
+}
+
    async function handleVideoDetection() {
      if (!video) {
        setError("Please select a video first.");
@@ -225,6 +260,18 @@ function App() {
                >
                  {loading ? "Analyzing Image..." : "Detect Deepfake"}
                </button>
+               
+<button
+  type="button"
+  className="detect-button gradcam-button"
+  onClick={handleGradcam}
+  disabled={!image || gradcamLoading}
+>
+  {gradcamLoading
+    ? "Generating Heatmap..."
+    : "Generate Grad-CAM Heatmap"}
+</button>
+
              </>
            ) : (
              <>
@@ -349,6 +396,25 @@ function App() {
                <p className="result-warning">⚠️ {result.warning}</p>
              </section>
            )}
+           
+{gradcamResult?.gradcam_image && (
+  <section className="result-panel gradcam-panel">
+    <span className="result-label">MODEL EXPLANATION</span>
+
+    <h2>Grad-CAM Heatmap</h2>
+
+    <img
+      src={`data:image/png;base64,${gradcamResult.gradcam_image}`}
+      alt="Grad-CAM heatmap showing image regions that influenced the model's prediction"
+      className="gradcam-image"
+    />
+
+    <p className="result-warning">
+      ⚠️ {gradcamResult.warning}
+    </p>
+  </section>
+)}
+
            {isVideoResult && (
              <section className="result-panel" aria-live="polite">
                <span className="result-label">VIDEO ANALYSIS REPORT</span>

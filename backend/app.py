@@ -221,6 +221,150 @@ def get_upload_bytes(uploaded_file):
     return file_bytes if file_bytes else None
 
 
+def generate_gradcam(image):
+    """Generate a Grad-CAM overlay for the model's predicted class."""
+    image = image.convert("RGB")
+
+    # Preprocess the image using the existing model transform.
+    image_tensor = transform(image).unsqueeze(0).to(device)
+
+    # Store the feature maps and their gradients.
+    activations = {}
+    gradients = {}
+
+    target_layer = model.features[-1]
+
+    def forward_hook(module, inputs, output):
+        activations["value"] = output
+
+        # Capture gradients flowing back through the feature maps.
+        output.register_hook(
+            lambda grad: gradients.update({"value": grad})
+        )
+
+    # Capture the final convolutional feature maps.
+    handle = target_layer.register_forward_hook(forward_hook)
+
+    try:
+        model.zero_grad(set_to_none=True)
+
+        # Grad-CAM needs gradients, so do not use inference_mode here.
+        with torch.enable_grad():
+            outputs = model(image_tensor)
+
+            # Explain the class predicted by the model.
+            predicted_index = int(outputs.argmax(dim=1).item())
+            outputs[0, predicted_index].backward()
+
+        feature_maps = activations["value"][0]
+        feature_gradients = gradients["value"][0]
+
+        # Average gradients to calculate the importance of each channel.
+        weights = feature_gradients.mean(dim=(1, 2))
+
+        # Combine feature maps using their importance weights.
+        cam = torch.sum(
+            weights[:, None, None] * feature_maps,
+            dim=0,
+        )
+
+        # Keep positive contributions and normalize the heatmap.
+        cam = torch.relu(cam)
+        cam = cam.detach().cpu().numpy()
+
+        cam_min = float(cam.min())
+        cam_max = float(cam.max())
+
+        if cam_max > cam_min:
+            cam = (cam - cam_min) / (cam_max - cam_min)
+        else:
+            cam = np.zeros_like(cam)
+
+        # Convert the heatmap into an image-sized visualization.
+        original = np.array(image.resize((224, 224)))
+        heatmap = cv2.resize(cam, (224, 224))
+
+        heatmap_uint8 = np.uint8(255 * heatmap)
+        heatmap_color = cv2.applyColorMap(
+            heatmap_uint8,
+            cv2.COLORMAP_JET,
+        )
+        heatmap_color = cv2.cvtColor(
+            heatmap_color,
+            cv2.COLOR_BGR2RGB,
+        )
+
+        # Blend the heatmap with the original image.
+        overlay = cv2.addWeighted(
+            original,
+            0.6,
+            heatmap_color,
+            0.4,
+            0,
+        )
+
+        return Image.fromarray(overlay)
+
+    finally:
+        handle.remove()
+        model.zero_grad(set_to_none=True)
+
+@app.route("/gradcam", methods=["POST"])
+def gradcam():
+    if "image" not in request.files:
+        return jsonify({
+            "error": "Upload an image using the 'image' field."
+        }), 400
+
+    uploaded_file = request.files["image"]
+
+    if not uploaded_file.filename:
+        return jsonify({"error": "No file selected."}), 400
+
+    try:
+        image = Image.open(uploaded_file.stream).convert("RGB")
+
+        # Generate the visualization.
+        overlay = generate_gradcam(image)
+
+        # Encode the visualization as PNG.
+        buffer = io.BytesIO()
+        overlay.save(buffer, format="PNG")
+        buffer.seek(0)
+
+        import base64
+
+        encoded_image = base64.b64encode(
+            buffer.getvalue()
+        ).decode("utf-8")
+
+        # Return the prediction and visualization.
+        prediction, fake_score, real_score = analyze_image(image)
+
+        return jsonify({
+            "prediction": prediction.capitalize(),
+            "class_scores": {
+                "fake": fake_score,
+                "real": real_score
+            },
+            "gradcam_image": encoded_image,
+            "warning": (
+                "Grad-CAM highlights image regions influencing the model's "
+                "prediction. It does not prove authenticity or manipulation."
+            )
+        })
+
+    except (UnidentifiedImageError, OSError, ValueError):
+        return jsonify({
+            "error": "Could not process the image."
+        }), 400
+
+    except Exception:
+        app.logger.exception("Grad-CAM generation failed")
+        return jsonify({
+            "error": "Could not generate the Grad-CAM visualization."
+        }), 500
+
 # --------------------------------------------------
 # Home endpoint
 # --------------------------------------------------
