@@ -45,7 +45,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.path.join(
     BASE_DIR,
     "models",
-    "efficientnet_b0_finetuned_best.pth",
+    "efficientnet_b0_finetuned_kaggle_best.pth",
 )
 
 device = torch.device("cpu")
@@ -191,7 +191,7 @@ def get_duplicate_info(file_hash):
     }
 
 
-def analyze_image(image):
+
     """Run EfficientNet-B0 inference on a PIL image."""
     image = image.convert("RGB")
     image_tensor = transform(image).unsqueeze(0).to(device)
@@ -221,14 +221,36 @@ def get_upload_bytes(uploaded_file):
     return file_bytes if file_bytes else None
 
 
-def generate_gradcam(image):
-    """Generate a Grad-CAM overlay for the model's predicted class."""
-    image = image.convert("RGB")
+def analyze_image(image):
+    """Run EfficientNet-B0 inference on a PIL image."""
 
-    # Preprocess the image using the existing model transform.
+    image = image.convert("RGB")
     image_tensor = transform(image).unsqueeze(0).to(device)
 
-    # Store the feature maps and their gradients.
+    with torch.inference_mode():
+        outputs = model(image_tensor)
+        probabilities = torch.softmax(outputs, dim=1)[0]
+
+    predicted_index = int(torch.argmax(probabilities).item())
+    prediction = idx_to_class[predicted_index]
+
+    fake_score = round(
+        float(probabilities[class_to_idx["fake"]]) * 100, 2
+    )
+
+    real_score = round(
+        float(probabilities[class_to_idx["real"]]) * 100, 2
+    )
+
+    return prediction, fake_score, real_score
+
+
+def generate_gradcam(image):
+    """Generate a Grad-CAM overlay for the predicted class."""
+
+    image = image.convert("RGB")
+    image_tensor = transform(image).unsqueeze(0).to(device)
+
     activations = {}
     gradients = {}
 
@@ -237,40 +259,31 @@ def generate_gradcam(image):
     def forward_hook(module, inputs, output):
         activations["value"] = output
 
-        # Capture gradients flowing back through the feature maps.
         output.register_hook(
             lambda grad: gradients.update({"value": grad})
         )
 
-    # Capture the final convolutional feature maps.
     handle = target_layer.register_forward_hook(forward_hook)
 
     try:
         model.zero_grad(set_to_none=True)
 
-        # Grad-CAM needs gradients, so do not use inference_mode here.
         with torch.enable_grad():
             outputs = model(image_tensor)
-
-            # Explain the class predicted by the model.
             predicted_index = int(outputs.argmax(dim=1).item())
             outputs[0, predicted_index].backward()
 
         feature_maps = activations["value"][0]
         feature_gradients = gradients["value"][0]
 
-        # Average gradients to calculate the importance of each channel.
         weights = feature_gradients.mean(dim=(1, 2))
 
-        # Combine feature maps using their importance weights.
         cam = torch.sum(
             weights[:, None, None] * feature_maps,
-            dim=0,
+            dim=0
         )
 
-        # Keep positive contributions and normalize the heatmap.
-        cam = torch.relu(cam)
-        cam = cam.detach().cpu().numpy()
+        cam = torch.relu(cam).detach().cpu().numpy()
 
         cam_min = float(cam.min())
         cam_max = float(cam.max())
@@ -280,27 +293,25 @@ def generate_gradcam(image):
         else:
             cam = np.zeros_like(cam)
 
-        # Convert the heatmap into an image-sized visualization.
         original = np.array(image.resize((224, 224)))
         heatmap = cv2.resize(cam, (224, 224))
 
         heatmap_uint8 = np.uint8(255 * heatmap)
+
         heatmap_color = cv2.applyColorMap(
             heatmap_uint8,
-            cv2.COLORMAP_JET,
-        )
-        heatmap_color = cv2.cvtColor(
-            heatmap_color,
-            cv2.COLOR_BGR2RGB,
+            cv2.COLORMAP_JET
         )
 
-        # Blend the heatmap with the original image.
-        overlay = cv2.addWeighted(
-            original,
-            0.6,
+        heatmap_color = cv2.cvtColor(
             heatmap_color,
-            0.4,
-            0,
+            cv2.COLOR_BGR2RGB
+        )
+
+        overlay = cv2.addWeighted(
+            original, 0.6,
+            heatmap_color, 0.4,
+            0
         )
 
         return Image.fromarray(overlay)
